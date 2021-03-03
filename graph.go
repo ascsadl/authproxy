@@ -7,6 +7,8 @@ import (
 	"net/url"
 )
 
+const apiScope = "user.read directory.accessAsUser.all"
+
 func AuthorizationCodeRequestURL(tenant, clientId, redirectURI string) string {
 	u := &url.URL{
 		Scheme: "https",
@@ -66,23 +68,25 @@ type UserResponse struct {
 	DisplayName string `json:"displayName"`
 }
 
-func GetUserDisplayName(token string) (string, error) {
+func GetUser(token string) (userName string, displayName string, err error) {
 	req, err := http.NewRequest("GET", "https://graph.microsoft.com/v1.0/me", nil)
 	if err != nil {
-		return "", err
+		return
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	c := http.Client{}
 	resp, err := c.Do(req)
 	if err != nil {
-		return "", err
+		return
 	}
 	defer resp.Body.Close()
 
 	var r UserResponse
 	dec := json.NewDecoder(resp.Body)
 	err = dec.Decode(&r)
-	return r.DisplayName, err
+	userName = r.UserName
+	displayName = r.DisplayName
+	return
 }
 
 type GroupsResponse struct {
