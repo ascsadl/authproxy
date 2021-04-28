@@ -30,12 +30,16 @@ func NewAuthProxy(conf Config) *AuthProxy {
 	cookieStore.Options.Secure = true
 
 	var proxies []*ReverseProxy
-	for _, t := range conf.Targets {
-		u, err := url.Parse(t.URL)
+	for _, p := range conf.Proxies {
+		src, err := url.Parse(p.Src)
 		if err != nil {
-			log.Fatalf("Invalid URL in config: %s", t.URL)
+			log.Fatalf("Invalid src URL in config: %s", p.Src)
 		}
-		proxy := NewReverseProxy(u, t.Path, t.Group)
+		dst, err := url.Parse(p.Dst)
+		if err != nil {
+			log.Fatalf("Invalid dst URL in config: %s", p.Dst)
+		}
+		proxy := NewReverseProxy(src, dst, p.Group)
 		proxies = append(proxies, proxy)
 	}
 
@@ -68,14 +72,14 @@ func (ap *AuthProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ap *AuthProxy) serveSignin(w http.ResponseWriter, r *http.Request) {
-	redirectURI := ap.urlForPath("/signin-callback")
+	redirectURI := fmt.Sprintf("https://%s/signin-callback", r.Host)
 	u := AuthorizationCodeRequestURL(ap.conf.TenantId, ap.conf.ClientId, redirectURI)
 	http.Redirect(w, r, u, http.StatusFound)
 }
 
 func (ap *AuthProxy) serveSigninCallback(w http.ResponseWriter, r *http.Request, session *sessions.Session) {
 	code := r.URL.Query().Get("code")
-	redirectURI := ap.urlForPath("/signin-callback")
+	redirectURI := fmt.Sprintf("https://%s/signin-callback", r.Host)
 	token, err := RequestAccessToken(ap.conf.TenantId, ap.conf.ClientId, ap.conf.ClientSecret, code, redirectURI)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -109,7 +113,7 @@ func (ap *AuthProxy) serveSignoutCallback(w http.ResponseWriter, r *http.Request
 
 	bookmark := r.URL.Query().Get("bookmark")
 	if bookmark == "" {
-		bookmark = ap.urlForPath("/")
+		bookmark = fmt.Sprintf("https://%s/", r.Host)
 	}
 	http.Redirect(w, r, bookmark, http.StatusFound)
 }
@@ -127,10 +131,10 @@ func (ap *AuthProxy) serveReverseProxy(w http.ResponseWriter, r *http.Request, s
 		r.Header.Set(GroupsHeader, "")
 	}
 
-	for _, proxy := range ap.proxies {
-		if strings.HasPrefix(r.URL.Path, proxy.path) {
-			if proxy.Access(groups) {
-				proxy.ServeHTTP(w, r)
+	for _, p := range ap.proxies {
+		if r.Host == p.host && strings.HasPrefix(r.URL.Path, p.path) {
+			if p.Access(groups) {
+				p.ServeHTTP(w, r)
 			} else {
 				http.Error(w, "Not Found", http.StatusNotFound)
 			}
@@ -140,29 +144,20 @@ func (ap *AuthProxy) serveReverseProxy(w http.ResponseWriter, r *http.Request, s
 	http.Error(w, "Not Found", http.StatusNotFound)
 }
 
-func (ap *AuthProxy) urlForPath(path string) string {
-	u := url.URL{
-		Scheme: "https",
-		Host:   ap.conf.Host,
-		Path:   path,
-	}
-	return u.String()
-}
-
 type ReverseProxy struct {
 	*httputil.ReverseProxy
-
+	host  string
 	path  string
 	group string
 }
 
-func NewReverseProxy(u *url.URL, path, group string) *ReverseProxy {
-	rp := httputil.NewSingleHostReverseProxy(u)
+func NewReverseProxy(src, dst *url.URL, group string) *ReverseProxy {
+	rp := httputil.NewSingleHostReverseProxy(dst)
 	return &ReverseProxy{
 		ReverseProxy: rp,
-
-		path:  path,
-		group: group,
+		host:         src.Host,
+		path:         src.Path,
+		group:        group,
 	}
 }
 
@@ -182,8 +177,6 @@ func (p *ReverseProxy) Access(groups []string) bool {
 }
 
 type Config struct {
-	Host string `json:"host"`
-
 	// For Microsoft authentication
 	TenantId     string `json:"tenant_id"`
 	ClientId     string `json:"client_id"`
@@ -193,13 +186,13 @@ type Config struct {
 	CertsDir   string `json:"certs_dir"`   // Directory to store SSL certificates
 	CertsEmail string `json:"certs_email"` // Contact email for SSL registration
 
-	Targets []TargetConfig `json:"targets"`
+	Proxies []ProxyConfig `json:"proxies"`
 }
 
-type TargetConfig struct {
-	Path  string `json:"path"`
+type ProxyConfig struct {
+	Src   string `json:"src"`
 	Group string `json:"group,omitempty"`
-	URL   string `json:"url"`
+	Dst   string `json:"dst"`
 }
 
 func ReadConfig(file string) (Config, error) {
